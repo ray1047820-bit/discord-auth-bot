@@ -140,7 +140,13 @@ async def 인증(ctx):
     # 서버 채널에 버튼 전송
     await ctx.send(f"{ctx.author.mention} 아래 버튼을 눌러 인증하세요.", view=view)
 
-    def run_web(): port = int(os.environ.get("PORT", 5000))
+def run_web():
+    port = int(os.environ.get("PORT", 5000))  # Render 환경변수 PORT 사용
     app.run(host="0.0.0.0", port=port)
-    threading.Thread(target=run_web).start()
-    bot.run(BOT_TOKEN)
+
+# 웹서버를 별 스레드로 실행
+import threading
+threading.Thread(target=run_web).start()
+
+# Discord 봇 실행
+bot.run(BOT_TOKEN)
