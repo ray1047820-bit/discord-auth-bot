@@ -140,6 +140,27 @@ async def 인증(ctx):
     # 서버 채널에 버튼 전송
     await ctx.send(f"{ctx.author.mention} 아래 버튼을 눌러 인증하세요.", view=view)
 
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def 목록(ctx):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT discord_id, ip, used_at FROM verify_tokens WHERE used=1")
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("인증 기록이 없습니다.")
+        return
+
+    msg = ""
+    for row in rows:
+        user_id, ip, used_at = row
+        msg += f"<@{user_id}> - {ip}\n"
+
+    await ctx.send(f"✅ 인증 사용자 목록:\n{msg}")
+
+
 def run_web():
     port = int(os.environ.get("PORT", 5000))  # Render 환경변수 PORT 사용
     app.run(host="0.0.0.0", port=port)
