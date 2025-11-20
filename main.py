@@ -164,9 +164,10 @@ async def 목록(ctx):
 
     await ctx.send(f"✅ 인증 사용자 목록:\n{msg}")
 
-    @bot.command()
+@bot.command()
 async def 목록삭제(ctx):
     """✅ 인증 기록 DB 초기화 (관리자 전용)"""
+    ADMIN_ID = 1352770328342040651  # 관리자 ID
     if ctx.author.id != ADMIN_ID:
         await ctx.send("❌ 권한 없음")
         return
@@ -178,6 +179,7 @@ async def 목록삭제(ctx):
     conn.close()
 
     await ctx.send("🧹 인증 목록을 모두 삭제했습니다!")
+
 
 @bot.command()
 async def 명령어(ctx):
