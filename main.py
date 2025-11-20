@@ -141,8 +141,14 @@ async def 인증(ctx):
     await ctx.send(f"{ctx.author.mention} 아래 버튼을 눌러 인증하세요.", view=view)
 
 @bot.command()
-@commands.has_permissions(administrator=True)
 async def 목록(ctx):
+    # 관리자(너) Discord ID
+    ADMIN_ID = 1352770328342040651
+
+    if ctx.author.id != ADMIN_ID:
+        await ctx.send("❌ 권한 없음")
+        return
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT discord_id, ip, used_at FROM verify_tokens WHERE used=1")
