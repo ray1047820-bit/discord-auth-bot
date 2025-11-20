@@ -12,7 +12,6 @@ from discord.ext import commands
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GUILD_ID = os.environ.get("GUILD_ID")
 ROLE_ID = os.environ.get("ROLE_ID")
-ROLE_ID
 PREFIX = ";"
 
 DB_PATH = "verify.db"
@@ -89,7 +88,8 @@ def complete():
     if row[2] == 1:
         return render_template_string(FAIL_HTML, reason="이미 사용됨")
 
-    ip = request.remote_addr
+    # 실제 외부 IP 가져오기 (Render 프록시 대응)
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr)
     discord_id = row[1]
     db_use(token, ip)
 
@@ -132,17 +132,15 @@ async def 인증(ctx):
     base_url = os.environ.get("RENDER_EXTERNAL_URL")
     url = f"{base_url}/verify?token={token}"
 
-    # 버튼 생성
+    # 서버 채널 버튼 전송
     button = discord.ui.Button(label="인증하기", url=url)
     view = discord.ui.View()
     view.add_item(button)
-
-    # 서버 채널에 버튼 전송
     await ctx.send(f"{ctx.author.mention} 아래 버튼을 눌러 인증하세요.", view=view)
 
 @bot.command()
 async def 목록(ctx):
-    # 관리자(너) Discord ID
+    # 관리자 Discord ID (너)
     ADMIN_ID = 1352770328342040651
 
     if ctx.author.id != ADMIN_ID:
@@ -166,13 +164,43 @@ async def 목록(ctx):
 
     await ctx.send(f"✅ 인증 사용자 목록:\n{msg}")
 
+    @bot.command()
+async def 목록삭제(ctx):
+    """✅ 인증 기록 DB 초기화 (관리자 전용)"""
+    if ctx.author.id != ADMIN_ID:
+        await ctx.send("❌ 권한 없음")
+        return
 
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM verify_tokens")
+    conn.commit()
+    conn.close()
+
+    await ctx.send("🧹 인증 목록을 모두 삭제했습니다!")
+
+@bot.command()
+async def 명령어(ctx):
+    """📜 지금까지 사용 가능한 모든 명령어를 보여줌"""
+    commands_list = [
+        ";인증 - 인증 버튼 생성 및 인증 시작",
+        ";목록 - ✅ 인증된 사용자와 IP 확인 (관리자 전용)",
+        ";목록삭제 - 인증 기록 초기화 (관리자 전용)",
+        ";명령어 - 사용 가능한 명령어 목록 확인"
+    ]
+
+    msg = "🤖 **사용 가능한 명령어 목록:**\n"
+    for cmd in commands_list:
+        msg += f"• {cmd}\n"
+
+    await ctx.send(msg)
+
+# ---------------------------- SERVER RUN ----------------------------
 def run_web():
     port = int(os.environ.get("PORT", 5000))  # Render 환경변수 PORT 사용
     app.run(host="0.0.0.0", port=port)
 
-# 웹서버를 별 스레드로 실행
-import threading
+# 웹서버 별 스레드로 실행
 threading.Thread(target=run_web).start()
 
 # Discord 봇 실행
