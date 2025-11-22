@@ -10,8 +10,8 @@ from discord.ext import commands
 
 # ---------------------------- CONFIG ----------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GUILD_ID = os.environ.get("GUILD_ID")
-ROLE_ID = os.environ.get("ROLE_ID")
+GUILD_ID = int(os.environ.get("GUILD_ID"))
+ROLE_ID = int(os.environ.get("ROLE_ID"))
 PREFIX = ";"
 
 DB_PATH = "verify.db"
@@ -42,6 +42,7 @@ VERIFY_HTML = """
 <h2>인증페이지</h2>
 <form action="/complete" method="post">
   <input type="hidden" name="token" value="{{token}}">
+  <input type="hidden" name="discord_id" value="{{discord_id}}">
   <button type="submit">인증 완료하기</button>
 </form>
 """
@@ -77,27 +78,33 @@ def page_verify():
         return render_template_string(FAIL_HTML, reason="토큰 없음")
     if row[2] == 1:
         return render_template_string(FAIL_HTML, reason="이미 인증됨")
-    return render_template_string(VERIFY_HTML, token=token)
+
+    discord_id = row[1]
+    return render_template_string(VERIFY_HTML, token=token, discord_id=discord_id)
 
 @app.route("/complete", methods=["POST"])
 def complete():
     token = request.form.get("token")
+    discord_id = request.form.get("discord_id")
+
     row = db_get(token)
     if not row:
         return render_template_string(FAIL_HTML, reason="잘못된 토큰")
     if row[2] == 1:
         return render_template_string(FAIL_HTML, reason="이미 사용됨")
 
-    # 실제 외부 IP 가져오기 (Render 프록시 대응)
+    # 외부 IP
     ip = request.headers.get("X-Forwarded-For", request.remote_addr)
-    discord_id = row[1]
+
     db_use(token, ip)
 
+    # 역할 부여
     url = f"https://discord.com/api/v10/guilds/{GUILD_ID}/members/{discord_id}/roles/{ROLE_ID}"
     r = requests.put(url, headers={"Authorization": f"Bot {BOT_TOKEN}"})
 
     if r.status_code == 204:
         return SUCCESS_HTML
+
     return render_template_string(FAIL_HTML, reason=f"역할 부여 실패: {r.status_code}")
 
 # ---------------------------- DISCORD BOT ----------------------------
@@ -119,28 +126,26 @@ async def 인증(ctx):
     token = make_token()
     created = int(time.time())
 
-    # DB에 토큰 저장
+    # DB 저장
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute(
-        "INSERT INTO verify_tokens (token, discord_id, created_at) VALUES (?, ?, ?)",
-        (token, ctx.author.id, created)
-    )
+    c.execute("INSERT INTO verify_tokens (token, discord_id, created_at) VALUES (?, ?, ?)",
+              (token, ctx.author.id, created))
     conn.commit()
     conn.close()
 
     base_url = os.environ.get("RENDER_EXTERNAL_URL")
     url = f"{base_url}/verify?token={token}"
 
-    # 서버 채널 버튼 전송
+    # 버튼 생성
     button = discord.ui.Button(label="인증하기", url=url)
     view = discord.ui.View()
     view.add_item(button)
+
     await ctx.send(f"{ctx.author.mention} 아래 버튼을 눌러 인증하세요.", view=view)
 
 @bot.command()
 async def 목록(ctx):
-    # 관리자 Discord ID (너)
     ADMIN_ID = 1352770328342040651
 
     if ctx.author.id != ADMIN_ID:
@@ -149,25 +154,24 @@ async def 목록(ctx):
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT discord_id, ip, used_at FROM verify_tokens WHERE used=1")
+    c.execute("SELECT discord_id, ip FROM verify_tokens WHERE used=1")
     rows = c.fetchall()
     conn.close()
 
     if not rows:
-        await ctx.send("인증 기록이 없습니다.")
+        await ctx.author.send("인증 기록이 없습니다.")
         return
 
-    msg = ""
-    for row in rows:
-        user_id, ip, used_at = row
+    msg = "✅ **인증된 사용자 목록**\n\n"
+    for user_id, ip in rows:
         msg += f"<@{user_id}> - {ip}\n"
 
-    await ctx.send(f"✅ 인증 사용자 목록:\n{msg}")
+    # DM으로 전송 (Ephemeral 효과 동일)
+    await ctx.author.send(msg)
 
 @bot.command()
 async def 목록삭제(ctx):
-    """✅ 인증 기록 DB 초기화 (관리자 전용)"""
-    ADMIN_ID = 1352770328342040651  # 관리자 ID
+    ADMIN_ID = 1352770328342040651
     if ctx.author.id != ADMIN_ID:
         await ctx.send("❌ 권한 없음")
         return
@@ -178,32 +182,23 @@ async def 목록삭제(ctx):
     conn.commit()
     conn.close()
 
-    await ctx.send("🧹 인증 목록을 모두 삭제했습니다!")
-
+    await ctx.author.send("🧹 인증 목록을 모두 삭제했습니다!")
 
 @bot.command()
 async def 명령어(ctx):
-    """📜 지금까지 사용 가능한 모든 명령어를 보여줌"""
-    commands_list = [
-        ";인증 - 인증 버튼 생성 및 인증 시작",
-        ";목록 - ✅ 인증된 사용자와 IP 확인 (관리자 전용)",
-        ";목록삭제 - 인증 기록 초기화 (관리자 전용)",
-        ";명령어 - 사용 가능한 명령어 목록 확인"
-    ]
-
-    msg = "🤖 **사용 가능한 명령어 목록:**\n"
-    for cmd in commands_list:
-        msg += f"• {cmd}\n"
-
+    msg = (
+        "🤖 **사용 가능한 명령어 목록:**\n"
+        "• ;인증 - 인증 버튼 생성하기\n"
+        "• ;목록 - 인증된 사용자 + IP 확인 (DM으로 전송)\n"
+        "• ;목록삭제 - 인증 기록 초기화 (관리자)\n"
+        "• ;명령어 - 이 명령어 목록 표시\n"
+    )
     await ctx.send(msg)
 
 # ---------------------------- SERVER RUN ----------------------------
 def run_web():
-    port = int(os.environ.get("PORT", 5000))  # Render 환경변수 PORT 사용
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# 웹서버 별 스레드로 실행
 threading.Thread(target=run_web).start()
-
-# Discord 봇 실행
 bot.run(BOT_TOKEN)
