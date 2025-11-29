@@ -4,7 +4,9 @@ import secrets
 import time
 import threading
 import requests
+import json
 from flask import Flask, request, render_template_string
+
 import discord
 from discord.ext import commands
 
@@ -12,8 +14,9 @@ from discord.ext import commands
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GUILD_ID = int(os.environ.get("GUILD_ID"))
 ROLE_ID = int(os.environ.get("ROLE_ID"))
-PREFIX = ";"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+PREFIX = ";"
 DB_PATH = "verify.db"
 
 # ---------------------------- DB 초기화 ----------------------------
@@ -27,13 +30,45 @@ def init_db():
         created_at INTEGER,
         used INTEGER DEFAULT 0,
         used_at INTEGER,
-        ip TEXT
+        ip TEXT,
+        country TEXT,
+        proxy TEXT,
+        tor TEXT,
+        risk_level TEXT
     )
     """)
     conn.commit()
     conn.close()
 
 init_db()
+
+# ---------------------------- SECURITY CHECK ----------------------------
+
+def get_ip_info(ip):
+    """
+    IP 정보 조회 (국가, 프록시 여부, Tor 여부)
+    무료 API 사용
+    """
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=66846719"
+        data = requests.get(url, timeout=3).json()
+
+        country = data.get("country", "Unknown")
+        proxy = data.get("proxy", False)
+        hosting = data.get("hosting", False)
+
+        tor = "Yes" if hosting else "No"
+
+        risk = "낮음"
+        if proxy:
+            risk = "의심"
+        if hosting:
+            risk = "높음"
+
+        return country, str(proxy), tor, risk
+
+    except:
+        return "Unknown", "False", "No", "Unknown"
 
 # ---------------------------- FLASK ----------------------------
 app = Flask(__name__)
@@ -58,17 +93,21 @@ def db_get(token):
     conn.close()
     return row
 
-def db_use(token, ip):
+def db_update(token, ip, country, proxy, tor, risk):
     now = int(time.time())
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE verify_tokens SET used=1, used_at=?, ip=? WHERE token=?", (now, ip, token))
+    c.execute("""
+    UPDATE verify_tokens 
+    SET used=1, used_at=?, ip=?, country=?, proxy=?, tor=?, risk_level=?
+    WHERE token=?
+    """, (now, ip, country, proxy, tor, risk, token))
     conn.commit()
     conn.close()
 
 @app.route("/")
 def home():
-    return "<h1>Discord 인증서버 실행 중</h1>"
+    return "<h1>Discord 인증 서버 실행 중</h1>"
 
 @app.route("/verify")
 def page_verify():
@@ -93,12 +132,11 @@ def complete():
     if row[2] == 1:
         return render_template_string(FAIL_HTML, reason="이미 사용됨")
 
-    # 외부 IP
     ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
-    db_use(token, ip)
+    country, proxy, tor, risk = get_ip_info(ip)
+    db_update(token, ip, country, proxy, tor, risk)
 
-    # 역할 부여
     url = f"https://discord.com/api/v10/guilds/{GUILD_ID}/members/{discord_id}/roles/{ROLE_ID}"
     r = requests.put(url, headers={"Authorization": f"Bot {BOT_TOKEN}"})
 
@@ -126,7 +164,6 @@ async def 인증(ctx):
     token = make_token()
     created = int(time.time())
 
-    # DB 저장
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT INTO verify_tokens (token, discord_id, created_at) VALUES (?, ?, ?)",
@@ -137,7 +174,6 @@ async def 인증(ctx):
     base_url = os.environ.get("RENDER_EXTERNAL_URL")
     url = f"{base_url}/verify?token={token}"
 
-    # 버튼 생성
     button = discord.ui.Button(label="인증하기", url=url)
     view = discord.ui.View()
     view.add_item(button)
@@ -146,15 +182,11 @@ async def 인증(ctx):
 
 @bot.command()
 async def 목록(ctx):
-    ADMIN_ID = 1352770328342040651
-
-    if ctx.author.id != ADMIN_ID:
-        await ctx.send("❌ 권한 없음")
-        return
+    ADMIN_ID = ctx.author.id  # 너 원하면 특정 ID로 잠글 수 있음
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT discord_id, ip FROM verify_tokens WHERE used=1")
+    c.execute("SELECT discord_id, ip, country, proxy, tor, risk_level FROM verify_tokens WHERE used=1")
     rows = c.fetchall()
     conn.close()
 
@@ -163,39 +195,54 @@ async def 목록(ctx):
         return
 
     msg = "✅ **인증된 사용자 목록**\n\n"
-    for user_id, ip in rows:
-        msg += f"<@{user_id}> - {ip}\n"
+    for user_id, ip, country, proxy, tor, risk in rows:
+        msg += f"<@{user_id}> - IP: `{ip}` / {country} / 프록시:{proxy} / Tor:{tor} / 위험도:{risk}\n"
 
-    # DM으로 전송 (Ephemeral 효과 동일)
     await ctx.author.send(msg)
 
 @bot.command()
-async def 목록삭제(ctx):
-    ADMIN_ID = 1352770328342040651
-    if ctx.author.id != ADMIN_ID:
-        await ctx.send("❌ 권한 없음")
-        return
+async def 질문(ctx, *, question):
+    """
+    Gemini API 연결 - AI 자동 답변
+    """
+    headers = {
+        "Content-Type": "application/json",
+    }
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM verify_tokens")
-    conn.commit()
-    conn.close()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
 
-    await ctx.author.send("🧹 인증 목록을 모두 삭제했습니다!")
+    data = {
+        "contents": [{
+            "parts": [{"text": question}]
+        }]
+    }
+
+    response = requests.post(url, headers=headers, json=data).json()
+
+    try:
+        answer = response["candidates"][0]["content"]["parts"][0]["text"]
+    except:
+        answer = "⚠️ AI 응답을 가져오지 못했습니다."
+
+    embed = discord.Embed(
+        title="🤖 Gemini AI 답변",
+        description=answer,
+        color=0x00ffcc
+    )
+
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def 명령어(ctx):
     msg = (
-        "🤖 **사용 가능한 명령어 목록:**\n"
-        "• ;인증 - 인증 버튼 생성하기\n"
-        "• ;목록 - 인증된 사용자 + IP 확인 (DM으로 전송)\n"
-        "• ;목록삭제 - 인증 기록 초기화 (관리자)\n"
-        "• ;명령어 - 이 명령어 목록 표시\n"
+        "🤖 **명령어 목록:**\n"
+        "• ;인증 - 인증 버튼 생성\n"
+        "• ;목록 - 인증된 사용자 목록 + 보안 정보\n"
+        "• ;질문 (내용) - Gemini AI에게 질문하기\n"
     )
     await ctx.send(msg)
 
-# ---------------------------- SERVER RUN ----------------------------
+# ---------------------------- RUN SERVER ----------------------------
 def run_web():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
